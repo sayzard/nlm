@@ -104,7 +104,11 @@ func init() {
 
 		fmt.Fprintf(os.Stderr, "PPT Commands:\n")
 		fmt.Fprintf(os.Stderr, "  ppt-list <id>   List all PPT overviews for a notebook with status\n")
-		fmt.Fprintf(os.Stderr, "  ppt-create <id> [source-ids...]  Create PPT overview (uses all sources if none specified)\n")
+		fmt.Fprintf(os.Stderr, "  ppt-create <id> [source-ids...]  Create PPT overview (uses all sources if none specified)\n\n")
+
+		fmt.Fprintf(os.Stderr, "Infographic Commands:\n")
+		fmt.Fprintf(os.Stderr, "  infographic-list <id>   List all Infographic overviews for a notebook with status\n")
+		fmt.Fprintf(os.Stderr, "  infographic-create <id> [source-ids...]  Create Infographic overview (uses all sources if none specified)\n")
 
 		fmt.Fprintf(os.Stderr, "Artifact Commands:\n")
 		fmt.Fprintf(os.Stderr, "  create-artifact <id> <type>  Create artifact (note|audio|report|app)\n")
@@ -278,6 +282,21 @@ func validateArgs(cmd string, args []string) error {
 			fmt.Fprintf(os.Stderr, "usage: nlm ppt-create <notebook-id> [source-id...]\n")
 			return fmt.Errorf("invalid arguments")
 		}
+	case "infographic-list":
+		if len(args) != 1 {
+			fmt.Fprintf(os.Stderr, "usage: nlm infographic-list <notebook-id>\n")
+			return fmt.Errorf("invalid arguments")
+		}
+	case "infographic-download":
+		if len(args) < 1 || len(args) > 3 {
+			fmt.Fprintf(os.Stderr, "usage: nlm infographic-download <notebook-id> [infographic-id] [filename]\n")
+			return fmt.Errorf("invalid arguments")
+		}
+	case "infographic-create":
+		if len(args) < 1 {
+			fmt.Fprintf(os.Stderr, "usage: nlm infographic-create <notebook-id> [source-id...]\n")
+			return fmt.Errorf("invalid arguments")
+		}
 	case "audio-create":
 		if len(args) != 2 {
 			fmt.Fprintf(os.Stderr, "usage: nlm audio-create <notebook-id> <instructions>\n")
@@ -436,7 +455,7 @@ func isValidCommand(cmd string) bool {
 		"list", "ls", "create", "rm", "analytics", "list-featured",
 		"sources", "add", "rm-source", "rename-source", "refresh-source", "check-source", "discover-sources",
 		"notes", "new-note", "update-note", "rm-note",
-		"audio-create", "audio-get", "audio-rm", "audio-share", "audio-list", "audio-download", "video-create", "video-list", "video-download", "ppt-create", "ppt-list", "ppt-download",
+		"audio-create", "audio-get", "audio-rm", "audio-share", "audio-list", "audio-download", "video-create", "video-list", "video-download", "ppt-create", "ppt-list", "ppt-download", "infographic-create", "infographic-list", "infographic-download",
 		"create-artifact", "get-artifact", "list-artifacts", "artifacts", "rename-artifact", "delete-artifact",
 		"generate-guide", "generate-outline", "generate-section", "generate-magic", "generate-mindmap", "generate-chat", "chat", "chat-list",
 		"rephrase", "expand", "summarize", "critique", "brainstorm", "verify", "explain", "outline", "study-guide", "faq", "briefing-doc", "mindmap", "timeline", "toc",
@@ -772,6 +791,27 @@ func runCmd(client *api.Client, cmd string, args ...string) error {
 			filename = args[2]
 		}
 		err = downloadPPTOverview(client, args[0], args[1], filename)
+
+	// Infographic operations
+	case "infographic-create":
+		sourceIDs := []string{}
+		if len(args) > 1 {
+			sourceIDs = args[1:]
+		}
+		err = createInfographicOverview(client, args[0], sourceIDs)
+	case "infographic-list":
+		err = listInfographicOverviews(client, args[0])
+	case "infographic-download":
+		infographicID := ""
+		filename := ""
+		if len(args) > 1 {
+			infographicID = args[1]
+		}
+		if len(args) > 2 {
+			filename = args[2]
+		}
+		err = downloadInfographicOverview(client, args[0], infographicID, filename)
+
 	// Artifact operations
 	case "create-artifact":
 		err = createArtifact(client, args[0], args[1])
@@ -2480,6 +2520,152 @@ func downloadPPTOverview(c *api.Client, notebookID string, pptID string, filenam
 
 		fmt.Printf("✅ %s Saved to: %s", ppt.Title, targetFile)
 		// 显示文件大小
+		if stat, err := os.Stat(targetFile); err == nil {
+			fmt.Printf(" (%.2f MB)\n", float64(stat.Size())/(1024*1024))
+		} else {
+			fmt.Println()
+		}
+	}
+
+	return nil
+}
+
+// Infographic operations
+func createInfographicOverview(c *api.Client, projectID string, sourceIDs []string) error {
+	fmt.Printf("Creating Infographic overview for notebook %s...\n", projectID)
+	if len(sourceIDs) > 0 {
+		fmt.Printf("Using %d specified source(s)\n", len(sourceIDs))
+	} else {
+		fmt.Printf("Using all sources from notebook\n")
+	}
+
+	result, err := c.CreateInfographicOverview(projectID, sourceIDs)
+	if err != nil {
+		return fmt.Errorf("create Infographic overview: %w", err)
+	}
+
+	if !result.IsReady {
+		fmt.Println("✅ Infographic overview creation started. Infographic generation may take several minutes.")
+		fmt.Printf("  Project ID: %s\n", result.ProjectID)
+		if result.InfographicID != "" {
+			fmt.Printf("  Infographic ID: %s\n", result.InfographicID)
+		}
+		return nil
+	}
+
+	// If the result is immediately ready (unlikely but possible)
+	fmt.Printf("✅ Infographic Overview created:\n")
+	fmt.Printf("  Title: %s\n", result.Title)
+	fmt.Printf("  Infographic ID: %s\n", result.InfographicID)
+
+	if result.InfographicData != "" {
+		if strings.HasPrefix(result.InfographicData, "http://") || strings.HasPrefix(result.InfographicData, "https://") {
+			fmt.Printf("  Infographic URL: %s\n", result.InfographicData)
+		} else {
+			fmt.Printf("  Infographic data available\n")
+		}
+	}
+
+	return nil
+}
+
+func listInfographicOverviews(c *api.Client, notebookID string) error {
+	fmt.Printf("Listing Infographic overviews for notebook %s...\n", notebookID)
+
+	infographicOverviews, err := c.ListInfographicOverviews(notebookID)
+	if err != nil {
+		return fmt.Errorf("list Infographic overviews: %w", err)
+	}
+
+	if len(infographicOverviews) == 0 {
+		fmt.Println("No Infographic overviews found.")
+		return nil
+	}
+
+	// Initialize tabwriter with appropriate minimum column width and spacing
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+	fmt.Fprintln(w, "INFOGRAPHIC_ID\tTITLE\tSTATUS")
+	for _, infographic := range infographicOverviews {
+		status := "pending"
+		if infographic.IsReady {
+			status = "ready"
+		}
+		title := infographic.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t\n",
+			infographic.InfographicID,
+			title,
+			status,
+		)
+	}
+	return w.Flush()
+}
+
+func downloadInfographicOverview(c *api.Client, notebookID string, infographicID string, filename string) error {
+	fmt.Printf("Fetching Infographic overviews for notebook %s...\n", notebookID)
+
+	// Get all Infographics for the notebook
+	results, err := c.ListInfographicOverviews(notebookID)
+	if err != nil {
+		return fmt.Errorf("list Infographic overviews: %w", err)
+	}
+
+	if len(results) == 0 {
+		return fmt.Errorf("no Infographic overviews found for notebook %s", notebookID)
+	}
+
+	// Determine which Infographics to download
+	var tasks []*api.InfographicOverviewResult
+	if infographicID != "" {
+		// Filter by Infographic ID if specified
+		for _, r := range results {
+			if r.InfographicID == infographicID {
+				tasks = append(tasks, r)
+				break
+			}
+		}
+		if len(tasks) == 0 {
+			return fmt.Errorf("Infographic with ID %s not found", infographicID)
+		}
+	} else {
+		// Download all if no Infographic ID specified
+		tasks = results
+		fmt.Printf("No Infographic ID specified, downloading all %d Infographic(s)...\n", len(tasks))
+	}
+
+	// Execute download logic
+	for _, infographic := range tasks {
+		// Handle filename
+		targetFile := filename
+		if targetFile == "" || len(tasks) > 1 {
+			// Generate filename based on infographic.Title if downloading multiple or no filename specified
+			// Infographics are images, not PDFs
+			targetFile = fmt.Sprintf("%s.png", infographic.Title)
+		}
+
+		fmt.Printf("Downloading Infographic: %s (ID: %s)...\n", infographic.Title, infographic.InfographicID)
+
+		// Check download URL
+		if infographic.InfographicData != "" && (strings.HasPrefix(infographic.InfographicData, "http://") || strings.HasPrefix(infographic.InfographicData, "https://")) {
+			// Use authenticated download
+			if err := c.DownloadInfographicWithAuth(infographic.InfographicData, targetFile); err != nil {
+				fmt.Printf("❌ Failed to download %s: %v\n", infographic.InfographicID, err)
+				continue
+			}
+		} else {
+			// Try to save base64 data
+			if err := infographic.SaveInfographicToFile(targetFile); err != nil {
+				fmt.Printf("❌ Failed to save %s: %v\n", infographic.InfographicID, err)
+				continue
+			}
+		}
+
+		fmt.Printf("✅ %s Saved to: %s", infographic.Title, targetFile)
+		// Show file size
 		if stat, err := os.Stat(targetFile); err == nil {
 			fmt.Printf(" (%.2f MB)\n", float64(stat.Size())/(1024*1024))
 		} else {

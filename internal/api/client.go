@@ -2290,3 +2290,290 @@ func (c *Client) DownloadPPTWithAuth(pptURL, filename string) error {
 	ba := auth.New(c.config.Debug)
 	return ba.DownloadFileWithAuth(u.String(), filename)
 }
+
+// Infographic operations
+
+type InfographicOverviewResult struct {
+	ProjectID     string
+	InfographicID string
+	Title         string
+	InfographicData   string // Base64 encoded or URL
+	IsReady       bool
+}
+
+func (c *Client) CreateInfographicOverview(projectID string, sourceIDs []string) (*InfographicOverviewResult, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("project ID required")
+	}
+
+	// Get source IDs from project if not provided
+	if len(sourceIDs) == 0 {
+		project, err := c.GetProject(projectID)
+		if err != nil {
+			return nil, fmt.Errorf("get project: %w", err)
+		}
+
+		// Extract all source IDs from the project
+		for _, source := range project.Sources {
+			if source.SourceId != nil && source.SourceId.SourceId != "" {
+				sourceIDs = append(sourceIDs, source.SourceId.SourceId)
+			}
+		}
+
+		if len(sourceIDs) == 0 {
+			return nil, fmt.Errorf("no sources found in project")
+		}
+
+		if c.config.Debug {
+			fmt.Printf("Using %d sources from project for Infographic creation\n", len(sourceIDs))
+		}
+	}
+
+	// Format source IDs as required: [[["id1"]], [["id2"]], ...]
+	var sourceIDsArray []interface{}
+	for _, sourceID := range sourceIDs {
+		sourceIDsArray = append(sourceIDsArray, []interface{}{[]interface{}{sourceID}})
+	}
+
+	// Infographic structure:
+	// [[2], "notebook-id", [null, null, 7, [[["id1"]], [["id2"]]], null, null, null, null, null, null, null, null, null, null, [[null, null, null, 1, 2]], [[]]]]]
+	infographicArgs := []interface{}{
+		[]interface{}{2}, // Mode
+		projectID,        // Notebook ID
+		[]interface{}{
+			nil,
+			nil,
+			7,              // Type (7 for Infographic, vs 8 for PPT, 3 for video)
+			sourceIDsArray, // [[["id1"]], [["id2"]]]
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			[]interface{}{ // [14] Additional settings array
+				[]interface{}{
+					nil,
+					nil,
+					nil,
+					1,
+					2,
+				},
+			},
+			[]interface{}{}, // Empty array at the end
+		},
+	}
+
+	// Infographic uses the same RPC endpoint as video/PPT but with different type
+	resp, err := c.rpc.Do(rpc.Call{
+		ID:         rpc.RPCCreateInfographicOverview,
+		NotebookID: projectID,
+		Args:       infographicArgs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create Infographic overview: %w", err)
+	}
+
+	// Parse response - Infographic returns similar structure: [["infographic-id", "title", status, ...]]
+	var responseData []interface{}
+	if err := json.Unmarshal(resp, &responseData); err != nil {
+		// Try parsing as string then as JSON (double encoded)
+		var strData string
+		if err2 := json.Unmarshal(resp, &strData); err2 == nil {
+			if err3 := json.Unmarshal([]byte(strData), &responseData); err3 != nil {
+				return nil, fmt.Errorf("parse Infographic response: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("parse Infographic response: %w", err)
+		}
+	}
+
+	result := &InfographicOverviewResult{
+		ProjectID: projectID,
+		IsReady:   false, // Infographic generation is async
+	}
+
+	// Extract Infographic details from response
+	if len(responseData) > 0 {
+		if infographicData, ok := responseData[0].([]interface{}); ok && len(infographicData) > 0 {
+			// First element is Infographic ID
+			if id, ok := infographicData[0].(string); ok {
+				result.InfographicID = id
+				if c.config.Debug {
+					fmt.Printf("Infographic creation initiated with ID: %s\n", id)
+				}
+			}
+			// Second element is title
+			if len(infographicData) > 1 {
+				if title, ok := infographicData[1].(string); ok {
+					result.Title = title
+				}
+			}
+			// Third element is status (1 = processing, 2 = ready?)
+			if len(infographicData) > 2 {
+				if status, ok := infographicData[2].(float64); ok {
+					result.IsReady = status == 2
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// ListInfographicOverviews returns Infographic overviews for a notebook
+func (c *Client) ListInfographicOverviews(projectID string) ([]*InfographicOverviewResult, error) {
+	if !c.config.UseDirectRPC {
+		return nil, fmt.Errorf("Infographic list requires --direct-rpc flag")
+	}
+
+	// Use ListArtifacts RPC to get all artifacts, then filter for Infographic (type 7)
+	resp, err := c.rpc.Do(rpc.Call{
+		ID: rpc.RPCListArtifacts,
+		Args: []interface{}{
+			[]interface{}{2}, // Mode
+			projectID,
+			"NOT artifact.status = \"ARTIFACT_STATUS_SUGGESTED\"", // Filter
+		},
+		NotebookID: projectID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list artifacts for Infographic: %w", err)
+	}
+
+	// Parse response
+	var responseData []interface{}
+	if err := json.Unmarshal(resp, &responseData); err != nil {
+		var strData string
+		if err2 := json.Unmarshal(resp, &strData); err2 == nil {
+			if err3 := json.Unmarshal([]byte(strData), &responseData); err3 != nil {
+				return nil, fmt.Errorf("parse artifacts response: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("parse artifacts response: %w", err)
+		}
+	}
+
+	results := []*InfographicOverviewResult{}
+
+	// Helper function to recursively search for image URL (infographics use images, not PDFs)
+	var findImageURL func(interface{}) string
+	findImageURL = func(item interface{}) string {
+		switch v := item.(type) {
+		case string:
+			// Look for googleusercontent.com image URLs (infographics are images)
+			if strings.Contains(v, "lh3.googleusercontent.com/notebooklm/") {
+				return v
+			}
+		case []interface{}:
+			for _, subItem := range v {
+				if url := findImageURL(subItem); url != "" {
+					return url
+				}
+			}
+		case map[string]interface{}:
+			for _, val := range v {
+				if url := findImageURL(val); url != "" {
+					return url
+				}
+			}
+		}
+		return ""
+	}
+
+	if len(responseData) > 0 {
+		if artifactsArray, ok := responseData[0].([]interface{}); ok {
+			for _, artifactItem := range artifactsArray {
+				if artifact, ok := artifactItem.([]interface{}); ok && len(artifact) >= 3 {
+					// Check artifact type (index 2)
+					artifactType, ok := artifact[2].(float64)
+					if !ok {
+						continue
+					}
+
+					// Type 7 is Infographic
+					if int(artifactType) == 7 {
+						result := &InfographicOverviewResult{
+							ProjectID: projectID,
+							IsReady:   false,
+						}
+
+						// Extract artifact ID (index 0)
+						if id, ok := artifact[0].(string); ok {
+							result.InfographicID = id
+						}
+
+						// Extract title (index 1)
+						if title, ok := artifact[1].(string); ok {
+							result.Title = title
+						}
+
+						// Check status (index 4)
+						if len(artifact) > 4 {
+							if status, ok := artifact[4].(float64); ok {
+								if int(status) == 3 {
+									result.IsReady = true
+								}
+							}
+						}
+
+						// Search for image URL (infographics are images, not PDFs)
+						imageURL := findImageURL(artifact)
+
+						if imageURL != "" {
+							result.InfographicData = imageURL
+							result.IsReady = true
+						}
+
+						results = append(results, result)
+					}
+				}
+			}
+		}
+	}
+
+	return results, nil
+}
+
+// SaveInfographicToFile saves Infographic data to a file
+// NOTE: For URL downloads, use client.DownloadInfographicWithAuth() for proper authentication
+func (r *InfographicOverviewResult) SaveInfographicToFile(filename string) error {
+	if r.InfographicData == "" {
+		return fmt.Errorf("no Infographic data to save")
+	}
+
+	// Check if InfographicData is a URL or base64 data
+	if strings.HasPrefix(r.InfographicData, "http://") || strings.HasPrefix(r.InfographicData, "https://") {
+		return fmt.Errorf("Infographic data is a URL, use DownloadInfographicWithAuth() instead")
+	}
+
+	// Try to decode as base64
+	infographicBytes, err := base64.StdEncoding.DecodeString(r.InfographicData)
+	if err != nil {
+		// If not base64, treat as raw data
+		infographicBytes = []byte(r.InfographicData)
+	}
+
+	if err := os.WriteFile(filename, infographicBytes, 0644); err != nil {
+		return fmt.Errorf("write Infographic file: %w", err)
+	}
+
+	return nil
+}
+
+// DownloadInfographicWithAuth downloads an Infographic using browser with authentication
+func (c *Client) DownloadInfographicWithAuth(infographicURL, filename string) error {
+	u, err := url.Parse(infographicURL)
+	if err != nil {
+		return fmt.Errorf("parse Infographic download_url: %w", err)
+	}
+	u.RawQuery = u.Query().Encode()
+
+	// Use browser to download the file with authentication
+	ba := auth.New(c.config.Debug)
+	return ba.DownloadFileWithAuth(u.String(), filename)
+}

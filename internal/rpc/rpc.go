@@ -43,6 +43,8 @@ const (
 	RPCCreateVideoOverview = "R7cb6c" // CreateVideoOverview
 	// NotebookLM service - PPT operations (uses same RPC ID as video but different type)cd
 	RPCCreatePPTOverview = "R7cb6c" // CreatePPTOverview
+	// NotebookLM service - Infographic operations (uses same RPC ID as video but different type)
+	RPCCreateInfographicOverview = "R7cb6c" // CreateInfographicOverview
 
 	// NotebookLM service - Generation operations
 	RPCGenerateDocumentGuides    = "tr032e" // GenerateDocumentGuides
