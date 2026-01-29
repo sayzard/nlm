@@ -41,6 +41,16 @@ Audio Commands:
   audio-rm <id>     Delete audio overview
   audio-share <id>  Share audio overview
 
+PPT Commands:
+  ppt-list <id>     List all PPT overviews for a notebook
+  ppt-create <id> [source-ids...]  Create PPT overview (uses all sources if none specified)
+    Flags: --language=<ko|en|...>  --style=<prompt>  --ppt-format=1|2  --ppt-length=2|3
+
+Infographic Commands:
+  infographic-list <id>     List all Infographic overviews for a notebook
+  infographic-create <id> [source-ids...]  Create Infographic overview (uses all sources if none specified)
+    Flags: --language=<ko|en|...>  --style=<prompt>  --orientation=1|2|3 (1=landscape 2=portrait 3=square)  --detail-level=1|2|3 (1=concise 2=standard 3=detailed)
+
 Generation Commands:
   generate-guide <id>  Generate notebook guide
   generate-outline <id>  Generate content outline
@@ -255,6 +265,53 @@ nlm audio-share <notebook-id>
 
 # Share audio overview (public)
 nlm audio-share <notebook-id> --public
+```
+
+### PPT Overview
+
+```bash
+# List PPT overviews
+nlm ppt-list <notebook-id>
+
+# Create PPT (uses all sources, default: detailed materials)
+nlm ppt-create <notebook-id>
+
+# Format: 1=detailed materials (default), 2=presenter slides
+nlm --ppt-format=2 ppt-create <notebook-id>
+
+# Length: 2=short, 3=default
+nlm --ppt-length=2 ppt-create <notebook-id>
+
+# Create PPT with language and style
+nlm --language=ko --style="minimal" ppt-create <notebook-id>
+
+# Create PPT from specific sources
+nlm ppt-create <notebook-id> <source-id-1> <source-id-2>
+```
+
+### Infographic Overview
+
+```bash
+# List Infographic overviews
+nlm infographic-list <notebook-id>
+
+# Create Infographic (default: landscape, standard)
+nlm infographic-create <notebook-id>
+
+# Specify language and style
+nlm --language=ko --style="prompt" infographic-create <notebook-id>
+
+# Layout: 1=landscape (default), 2=portrait, 3=square
+nlm --orientation=2 infographic-create <notebook-id>
+
+# Detail level: 1=concise, 2=standard (default), 3=detailed
+nlm --detail-level=3 infographic-create <notebook-id>
+
+# Combine options
+nlm --language=ko --style="minimal" --orientation=3 --detail-level=1 infographic-create <notebook-id>
+
+# Download (requires --direct-rpc)
+nlm --direct-rpc infographic-download <notebook-id> [infographic-id] [filename]
 ```
 
 ### Batch Mode

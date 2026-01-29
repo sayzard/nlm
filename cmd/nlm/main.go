@@ -32,9 +32,15 @@ var (
 	debugFieldMapping bool
 	chromeProfile     string
 	mimeType          string
-	chunkedResponse   bool // Control rt=c parameter for chunked vs JSON array response
-	useDirectRPC      bool // Use direct RPC calls instead of orchestration service
-	skipSources       bool // Skip fetching sources for chat (useful when project is inaccessible)
+	chunkedResponse   bool   // Control rt=c parameter for chunked vs JSON array response
+	useDirectRPC      bool   // Use direct RPC calls instead of orchestration service
+	skipSources       bool   // Skip fetching sources for chat (useful when project is inaccessible)
+	language          string // Language code (e.g. ko, en). Empty sends null (used for infographic, PPT, etc.)
+	stylePrompt       string // Style prompt. Empty sends null
+	orientation       int    // Infographic layout: 0=unspecified(default 1), 1=landscape, 2=portrait, 3=square
+	detailLevel       int    // Infographic detail level: 0=unspecified(default 2), 1=concise, 2=standard, 3=detailed
+	pptFormat         int    // PPT format: 0=unspecified(default 1), 1=detailed materials, 2=presenter slides
+	pptLength         int    // PPT length: 0=unspecified(default 3), 2=short, 3=default
 )
 
 // ChatSession represents a persistent chat conversation
@@ -64,6 +70,12 @@ func init() {
 	flag.StringVar(&authToken, "auth", os.Getenv("NLM_AUTH_TOKEN"), "auth token (or set NLM_AUTH_TOKEN)")
 	flag.StringVar(&cookies, "cookies", os.Getenv("NLM_COOKIES"), "cookies for authentication (or set NLM_COOKIES)")
 	flag.StringVar(&mimeType, "mime", "", "specify MIME type for content (e.g. 'text/xml', 'application/json')")
+	flag.StringVar(&language, "language", "", "language code (e.g. ko, en); empty = null")
+	flag.StringVar(&stylePrompt, "style", "", "style prompt; empty = null")
+	flag.IntVar(&orientation, "orientation", 0, "infographic layout: 1=landscape, 2=portrait, 3=square (default 1)")
+	flag.IntVar(&detailLevel, "detail-level", 0, "infographic detail level: 1=concise, 2=standard, 3=detailed (default 2)")
+	flag.IntVar(&pptFormat, "ppt-format", 0, "PPT format: 1=detailed materials, 2=presenter slides (default 1)")
+	flag.IntVar(&pptLength, "ppt-length", 0, "PPT length: 2=short, 3=default (default 3)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: nlm <command> [arguments]\n\n")
@@ -104,11 +116,13 @@ func init() {
 
 		fmt.Fprintf(os.Stderr, "PPT Commands:\n")
 		fmt.Fprintf(os.Stderr, "  ppt-list <id>   List all PPT overviews for a notebook with status\n")
-		fmt.Fprintf(os.Stderr, "  ppt-create <id> [source-ids...]  Create PPT overview (uses all sources if none specified)\n\n")
+		fmt.Fprintf(os.Stderr, "  ppt-create <id> [source-ids...]  Create PPT overview (uses all sources if none specified)\n")
+		fmt.Fprintf(os.Stderr, "    Flags: --language=<ko|en|...>  --style=<prompt>  --ppt-format=1|2  --ppt-length=2|3\n\n")
 
 		fmt.Fprintf(os.Stderr, "Infographic Commands:\n")
 		fmt.Fprintf(os.Stderr, "  infographic-list <id>   List all Infographic overviews for a notebook with status\n")
 		fmt.Fprintf(os.Stderr, "  infographic-create <id> [source-ids...]  Create Infographic overview (uses all sources if none specified)\n")
+		fmt.Fprintf(os.Stderr, "    Flags: --language=<ko|en|...>  --style=<prompt>  --orientation=1|2|3 (1=landscape 2=portrait 3=square)  --detail-level=1|2|3\n")
 
 		fmt.Fprintf(os.Stderr, "Artifact Commands:\n")
 		fmt.Fprintf(os.Stderr, "  create-artifact <id> <type>  Create artifact (note|audio|report|app)\n")
@@ -2385,7 +2399,25 @@ func createPPTOverview(c *api.Client, projectID string, sourceIDs []string) erro
 		fmt.Printf("Using all sources from notebook\n")
 	}
 
-	result, err := c.CreatePPTOverview(projectID, sourceIDs)
+	var opts *api.CreatePPTOverviewOptions
+	if language != "" || stylePrompt != "" || (pptFormat >= 1 && pptFormat <= 2) || (pptLength == 2 || pptLength == 3) {
+		opts = &api.CreatePPTOverviewOptions{}
+		if language != "" {
+			opts.Language = &language
+		}
+		if stylePrompt != "" {
+			opts.StylePrompt = &stylePrompt
+		}
+		if pptFormat >= 1 && pptFormat <= 2 {
+			f := pptFormat
+			opts.Format = &f
+		}
+		if pptLength == 2 || pptLength == 3 {
+			l := pptLength
+			opts.Length = &l
+		}
+	}
+	result, err := c.CreatePPTOverviewWithOptions(projectID, sourceIDs, opts)
 	if err != nil {
 		return fmt.Errorf("create PPT overview: %w", err)
 	}
@@ -2428,10 +2460,9 @@ func listPPTOverviews(c *api.Client, notebookID string) error {
 		return nil
 	}
 
-	// 初始化 tabwriter，设置合适的最小列宽和间距
+	// Initialize tabwriter with appropriate minimum column width and spacing
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
-	// 1. 在表头增加 DOWNLOAD_URL
 	fmt.Fprintln(w, "PPT_ID\tTITLE\tSTATUS")
 	for _, ppt := range pptOverviews {
 		status := "pending"
@@ -2443,13 +2474,6 @@ func listPPTOverviews(c *api.Client, notebookID string) error {
 			title = "(untitled)"
 		}
 
-		// // 2. 获取下载链接，如果为空则显示横线或 N/A
-		// downloadURL := ppt.PPTData
-		// if downloadURL == "" {
-		// 	downloadURL = "-"
-		// }
-
-		// 3. 在 Fprintf 中增加对应的格式化占位符
 		fmt.Fprintf(w, "%s\t%s\t%s\t\n",
 			ppt.PPTID,
 			title,
@@ -2463,7 +2487,7 @@ func listPPTOverviews(c *api.Client, notebookID string) error {
 func downloadPPTOverview(c *api.Client, notebookID string, pptID string, filename string) error {
 	fmt.Printf("Fetching PPT overviews for notebook %s...\n", notebookID)
 
-	// 获取该笔记本下所有的 PPT 列表
+	// Get all PPT overviews for the notebook
 	results, err := c.ListPPTOverviews(notebookID)
 	if err != nil {
 		return fmt.Errorf("list PPT overviews: %w", err)
@@ -2473,10 +2497,10 @@ func downloadPPTOverview(c *api.Client, notebookID string, pptID string, filenam
 		return fmt.Errorf("no PPT overviews found for notebook %s", notebookID)
 	}
 
-	// 确定需要下载的任务列表
+	// Determine which PPTs to download
 	var tasks []*api.PPTOverviewResult
 	if pptID != "" {
-		// 如果指定了 PPTID，进行过滤
+		// Filter by PPT ID if specified
 		for _, r := range results {
 			if r.PPTID == pptID {
 				tasks = append(tasks, r)
@@ -2487,31 +2511,31 @@ func downloadPPTOverview(c *api.Client, notebookID string, pptID string, filenam
 			return fmt.Errorf("PPT with ID %s not found", pptID)
 		}
 	} else {
-		// 如果没有指定 PPTID，下载全部
+		// Download all if no PPT ID specified
 		tasks = results
 		fmt.Printf("No PPT ID specified, downloading all %d PPT(s)...\n", len(tasks))
 	}
 
-	// 执行下载逻辑
+	// Execute download logic
 	for _, ppt := range tasks {
-		// 处理文件名
+		// Handle filename
 		targetFile := filename
 		if targetFile == "" || len(tasks) > 1 {
-			// 如果是下载多个，或者没指定文件名，则根据 ppt.Title 生成文件名
+			// Generate filename from ppt.Title when downloading multiple or no filename specified
 			targetFile = fmt.Sprintf("%s.pdf", ppt.Title)
 		}
 
 		fmt.Printf("Downloading PPT: %s (ID: %s)...\n", ppt.Title, ppt.PPTID)
 
-		// 检查下载链接
+		// Check download URL
 		if ppt.PPTData != "" && (strings.HasPrefix(ppt.PPTData, "http://") || strings.HasPrefix(ppt.PPTData, "https://")) {
-			// 使用认证下载
+			// Use authenticated download
 			if err := c.DownloadPPTWithAuth(ppt.PPTData, targetFile); err != nil {
 				fmt.Printf("❌ Failed to download %s: %v\n", ppt.PPTID, err)
 				continue
 			}
 		} else {
-			// 尝试保存 base64 数据
+			// Try to save base64 data
 			if err := ppt.SavePPTToFile(targetFile); err != nil {
 				fmt.Printf("❌ Failed to save %s: %v\n", ppt.PPTID, err)
 				continue
@@ -2519,7 +2543,7 @@ func downloadPPTOverview(c *api.Client, notebookID string, pptID string, filenam
 		}
 
 		fmt.Printf("✅ %s Saved to: %s", ppt.Title, targetFile)
-		// 显示文件大小
+		// Show file size
 		if stat, err := os.Stat(targetFile); err == nil {
 			fmt.Printf(" (%.2f MB)\n", float64(stat.Size())/(1024*1024))
 		} else {
@@ -2539,7 +2563,25 @@ func createInfographicOverview(c *api.Client, projectID string, sourceIDs []stri
 		fmt.Printf("Using all sources from notebook\n")
 	}
 
-	result, err := c.CreateInfographicOverview(projectID, sourceIDs)
+	var opts *api.CreateInfographicOverviewOptions
+	if language != "" || stylePrompt != "" || (orientation >= 1 && orientation <= 3) || (detailLevel >= 1 && detailLevel <= 3) {
+		opts = &api.CreateInfographicOverviewOptions{}
+		if language != "" {
+			opts.Language = &language
+		}
+		if stylePrompt != "" {
+			opts.StylePrompt = &stylePrompt
+		}
+		if orientation >= 1 && orientation <= 3 {
+			o := orientation
+			opts.Orientation = &o
+		}
+		if detailLevel >= 1 && detailLevel <= 3 {
+			dl := detailLevel
+			opts.DetailLevel = &dl
+		}
+	}
+	result, err := c.CreateInfographicOverviewWithOptions(projectID, sourceIDs, opts)
 	if err != nil {
 		return fmt.Errorf("create Infographic overview: %w", err)
 	}

@@ -1320,12 +1320,12 @@ func (ba *BrowserAuth) DownloadFileWithAuth(downloadURL, savePath string) error 
 
 	var netCookies []*network.Cookie
 	if err := chromedp.Run(ctx,
-		// 等待账号信息加载完成
+		// Wait for account info to finish loading
 		chromedp.Sleep(15*time.Second),
-		// 刷新cookie
+		// Refresh cookie
 		chromedp.Navigate("https://accounts.google.com/CheckCookie?continue=https://www.google.com/"),
 
-		// 获取accounts.google.com/CheckCookie校验过的cookie
+		// Get cookies validated by accounts.google.com/CheckCookie
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			cookies, err := network.GetCookies().
 				WithUrls([]string{"https://google.com", "https://usercontent.google.com"}).
@@ -1356,9 +1356,8 @@ func (ba *BrowserAuth) DownloadFileWithAuth(downloadURL, savePath string) error 
 		})
 	}
 
-	// 将 Cookies 注入到 Jar 中
-	// 注意：CookieJar 需要根据 URL 匹配 Cookie。
-	// Google 的核心 Cookie 通常是 .google.com 域，所以我们需要设置进去
+	// Inject cookies into the Jar.
+	// CookieJar matches cookies by URL; Google core cookies are usually .google.com, so set them.
 	u, _ := url.Parse(downloadURL)
 	rootURL, _ := url.Parse("https://google.com")
 
@@ -1388,7 +1387,7 @@ func (ba *BrowserAuth) DownloadFileWithAuth(downloadURL, savePath string) error 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// 读取一点 body 看看错误信息（如果是 403/401 说明 Cookie 没生效）
+		// Read a bit of body for error message (403/401 usually means cookie did not apply)
 		bodySample, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("download failed with status %s: %s", resp.Status, string(bodySample))
 	}

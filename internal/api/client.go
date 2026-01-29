@@ -226,16 +226,115 @@ func (c *Client) CheckSourceFreshness(sourceID string) (*pb.CheckSourceFreshness
 }
 
 func (c *Client) ActOnSources(projectID string, action string, sourceIDs []string) error {
-	req := &pb.ActOnSourcesRequest{
-		ProjectId: projectID,
-		Action:    action,
-		SourceIds: sourceIDs,
+	// For mindmap, the first parameter is the SOURCE ID (with 4 levels of nesting)
+	// and the sixth parameter uses [CONTEXT]
+	// For other actions, the first parameter is the PROJECT ID
+	var firstParam interface{}
+	var sourceIDsList []interface{}
+
+	if action == "interactive_mindmap" && len(sourceIDs) > 0 {
+		// For mindmap with explicit source ID: use source ID in first param (3 levels, becomes 4 after JSON marshaling)
+		firstParam = []interface{}{
+			[]interface{}{
+				[]interface{}{sourceIDs[0]},
+			},
+		}
+		// Use [CONTEXT] in the action sources list
+		sourceIDsList = []interface{}{
+			[]interface{}{"[CONTEXT]", ""},
+		}
+	} else if len(sourceIDs) == 0 {
+		// No source IDs provided: use project ID in first param with [CONTEXT]
+		firstParam = []interface{}{
+			[]interface{}{
+				[]interface{}{projectID},
+			},
+		}
+		sourceIDsList = []interface{}{
+			[]interface{}{"[CONTEXT]", ""},
+		}
+	} else {
+		// Explicit source IDs for other actions: use project ID in first param
+		firstParam = []interface{}{
+			[]interface{}{
+				[]interface{}{projectID},
+			},
+		}
+		for _, sourceID := range sourceIDs {
+			sourceIDsList = append(sourceIDsList, []interface{}{sourceID, ""})
+		}
 	}
-	ctx := context.Background()
-	_, err := c.orchestrationService.ActOnSources(ctx, req)
+
+	// Build the args array in the correct format for ActOnSources:
+	// [[[[id]]]], null, null, null, null, [action, source_ids, ""], null, [2, null, [1]]
+	actOnSourcesArgs := []interface{}{
+		firstParam, // ID (source ID for mindmap, project ID otherwise) with 4 levels
+		nil,        // null
+		nil,        // null
+		nil,        // null
+		nil,        // null
+		// Action and source IDs array
+		[]interface{}{
+			action,        // The action type (e.g., "interactive_mindmap")
+			sourceIDsList, // Source IDs array
+			"",            // Empty string
+		},
+		nil, // null
+		// Metadata array
+		[]interface{}{2, nil, []interface{}{1}},
+	}
+
+	// Debug output - print the payload
+	if payloadJSON, err := json.MarshalIndent(actOnSourcesArgs, "", "  "); err == nil {
+		fmt.Fprintf(os.Stderr, "\n=== ActOnSources Payload ===\n")
+		fmt.Fprintf(os.Stderr, "Action: %s\n", action)
+		fmt.Fprintf(os.Stderr, "Project ID: %s\n", projectID)
+		fmt.Fprintf(os.Stderr, "Source IDs: %v\n", sourceIDs)
+		fmt.Fprintf(os.Stderr, "Payload JSON:\n%s\n", string(payloadJSON))
+		fmt.Fprintf(os.Stderr, "============================\n\n")
+	}
+
+	resp, err := c.rpc.Do(rpc.Call{
+		ID:         rpc.RPCActOnSources,
+		NotebookID: projectID,
+		Args:       actOnSourcesArgs,
+	})
 	if err != nil {
 		return fmt.Errorf("act on sources: %w", err)
 	}
+
+	if c.config.Debug {
+		fmt.Printf("ActOnSources response: %s\n", string(resp))
+	}
+
+	// For mindmap action, save the JSON response to a file
+	if action == "interactive_mindmap" && len(resp) > 0 {
+		// Response format: [["JSON_STRING",null,[ids]]]
+		// Parse the outer array to extract the JSON string
+		var outerArray [][]interface{}
+		if err := json.Unmarshal(resp, &outerArray); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to parse mindmap response: %v\n", err)
+		} else if len(outerArray) > 0 && len(outerArray[0]) > 0 {
+			// Extract the JSON string from first element
+			if jsonStr, ok := outerArray[0][0].(string); ok {
+				// Pretty print the JSON
+				var mindmapData interface{}
+				if err := json.Unmarshal([]byte(jsonStr), &mindmapData); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to parse mindmap JSON: %v\n", err)
+				} else {
+					// Write pretty-printed JSON to file
+					filename := fmt.Sprintf("mindmap-%s.json", projectID)
+					prettyJSON, _ := json.MarshalIndent(mindmapData, "", "  ")
+					if err := os.WriteFile(filename, prettyJSON, 0644); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Failed to save mindmap to %s: %v\n", filename, err)
+					} else {
+						fmt.Printf("Mindmap saved to: %s\n", filename)
+					}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -2009,9 +2108,41 @@ type PPTOverviewResult struct {
 	IsReady   bool
 }
 
+// CreatePPTOverviewOptions holds optional style, language, format and length for PPT creation.
+// When a field is nil, it is sent as null in the payload.
+// Format: 1=detailed materials (default), 2=presenter slides. Length: 2=short, 3=default.
+type CreatePPTOverviewOptions struct {
+	StylePrompt *string // Style prompt string. nil sends null
+	Language    *string // Language code (e.g. "ko", "en"). nil sends null
+	Format      *int    // Format: 1=detailed materials, 2=presenter slides. nil uses 1
+	Length      *int    // Length: 2=short, 3=default. nil uses 3
+}
+
 func (c *Client) CreatePPTOverview(projectID string, sourceIDs []string) (*PPTOverviewResult, error) {
+	return c.CreatePPTOverviewWithOptions(projectID, sourceIDs, nil)
+}
+
+func (c *Client) CreatePPTOverviewWithOptions(projectID string, sourceIDs []string, opts *CreatePPTOverviewOptions) (*PPTOverviewResult, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("project ID required")
+	}
+
+	var stylePrompt, language interface{} = nil, nil
+	format := 1 // default: detailed materials
+	length := 3 // default
+	if opts != nil {
+		if opts.StylePrompt != nil {
+			stylePrompt = *opts.StylePrompt
+		}
+		if opts.Language != nil {
+			language = *opts.Language
+		}
+		if opts.Format != nil {
+			format = *opts.Format
+		}
+		if opts.Length != nil {
+			length = *opts.Length
+		}
 	}
 
 	// Get source IDs from project if not provided
@@ -2043,8 +2174,14 @@ func (c *Client) CreatePPTOverview(projectID string, sourceIDs []string) (*PPTOv
 		sourceIDsArray = append(sourceIDsArray, []interface{}{[]interface{}{sourceID}})
 	}
 
-	// PPT structure based on the request:
-	// [[2], "notebook-id", [null, null, 8, [[["id1"]], [["id2"]]], null, null, null, null, null, null, null, null, null, null, null, null, [[]]]]]
+	// PPT structure: [..., [14]: [["style","ko",1,3]], [[]]]
+	// [14] inner: [0]=style, [1]=language, [2]=format(1=detailed materials, 2=presenter slides), [3]=length(2=short, 3=default)
+	settingsArray := []interface{}{}
+	if stylePrompt != nil || language != nil || format != 1 || length != 3 {
+		settingsArray = []interface{}{
+			[]interface{}{stylePrompt, language, format, length},
+		}
+	}
 	pptArgs := []interface{}{
 		[]interface{}{2}, // Mode
 		projectID,        // Notebook ID
@@ -2065,6 +2202,7 @@ func (c *Client) CreatePPTOverview(projectID string, sourceIDs []string) (*PPTOv
 			nil,
 			nil,
 			nil,
+			settingsArray,   // [14] style, language, format, length (nil = unspecified)
 			[]interface{}{}, // Empty array at the end
 		},
 	}
@@ -2294,16 +2432,48 @@ func (c *Client) DownloadPPTWithAuth(pptURL, filename string) error {
 // Infographic operations
 
 type InfographicOverviewResult struct {
-	ProjectID     string
-	InfographicID string
-	Title         string
-	InfographicData   string // Base64 encoded or URL
-	IsReady       bool
+	ProjectID       string
+	InfographicID   string
+	Title           string
+	InfographicData string // Base64 encoded or URL
+	IsReady         bool
+}
+
+// CreateInfographicOverviewOptions holds optional style, language, orientation and detail level for infographic creation.
+// When a field is nil, it is sent as null in the payload.
+// Orientation: 1=landscape (default), 2=portrait, 3=square. DetailLevel: 1=concise, 2=standard (default), 3=detailed.
+type CreateInfographicOverviewOptions struct {
+	StylePrompt *string // Style prompt string. nil sends null
+	Language    *string // Language code (e.g. "ko", "en"). nil sends null
+	Orientation *int    // Output shape: 1=landscape, 2=portrait, 3=square. nil uses 1
+	DetailLevel *int    // Detail level: 1=concise, 2=standard, 3=detailed. nil uses 2
 }
 
 func (c *Client) CreateInfographicOverview(projectID string, sourceIDs []string) (*InfographicOverviewResult, error) {
+	return c.CreateInfographicOverviewWithOptions(projectID, sourceIDs, nil)
+}
+
+func (c *Client) CreateInfographicOverviewWithOptions(projectID string, sourceIDs []string, opts *CreateInfographicOverviewOptions) (*InfographicOverviewResult, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("project ID required")
+	}
+
+	var stylePrompt, language interface{} = nil, nil
+	orientation := 1 // default: landscape
+	detailLevel := 2 // default: standard
+	if opts != nil {
+		if opts.StylePrompt != nil {
+			stylePrompt = *opts.StylePrompt
+		}
+		if opts.Language != nil {
+			language = *opts.Language
+		}
+		if opts.Orientation != nil {
+			orientation = *opts.Orientation
+		}
+		if opts.DetailLevel != nil {
+			detailLevel = *opts.DetailLevel
+		}
 	}
 
 	// Get source IDs from project if not provided
@@ -2336,7 +2506,8 @@ func (c *Client) CreateInfographicOverview(projectID string, sourceIDs []string)
 	}
 
 	// Infographic structure:
-	// [[2], "notebook-id", [null, null, 7, [[["id1"]], [["id2"]]], null, null, null, null, null, null, null, null, null, null, [[null, null, null, 1, 2]], [[]]]]]
+	// [[2], "notebook-id", [null, null, 7, ...], [14]: [["prompt","ko",null,1,2]], [[]]]]
+	// [14] inner: [0]=style, [1]=language, [2]=null, [3]=orientation(1=landscape/2=portrait/3=square), [4]=detail level
 	infographicArgs := []interface{}{
 		[]interface{}{2}, // Mode
 		projectID,        // Notebook ID
@@ -2355,13 +2526,13 @@ func (c *Client) CreateInfographicOverview(projectID string, sourceIDs []string)
 			nil,
 			nil,
 			nil,
-			[]interface{}{ // [14] Additional settings array
+			[]interface{}{ // [14] Additional settings: style, language, orientation, detail level
 				[]interface{}{
+					stylePrompt, // style prompt, nil sends null
+					language,    // language code, nil sends null
 					nil,
-					nil,
-					nil,
-					1,
-					2,
+					orientation, // orientation: 1=landscape, 2=portrait, 3=square
+					detailLevel, // detail level: 1=concise, 2=standard, 3=detailed
 				},
 			},
 			[]interface{}{}, // Empty array at the end
