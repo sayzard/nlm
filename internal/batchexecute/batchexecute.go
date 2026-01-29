@@ -149,7 +149,14 @@ func (c *Client) Execute(rpcs []RPC) (*Response, error) {
 
 	form := url.Values{}
 	form.Set("f.req", string(reqBody))
-	form.Set("at", c.config.AuthToken)
+	// Add timestamp to auth token if not already present
+	authToken := c.config.AuthToken
+	if !strings.Contains(authToken, ":") {
+		// Add current timestamp in milliseconds
+		timestamp := time.Now().UnixMilli()
+		authToken = fmt.Sprintf("%s:%d", authToken, timestamp)
+	}
+	form.Set("at", authToken)
 
 	if c.config.Debug {
 		// Safely display auth token with conservative masking
