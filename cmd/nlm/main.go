@@ -2465,9 +2465,9 @@ func listPPTOverviews(c *api.Client, notebookID string) error {
 
 	fmt.Fprintln(w, "PPT_ID\tTITLE\tSTATUS")
 	for _, ppt := range pptOverviews {
-		status := "pending"
-		if ppt.IsReady {
-			status = "ready"
+		status := ppt.Status
+		if status == "" {
+			status = "pending"
 		}
 		title := ppt.Title
 		if title == "" {
@@ -2629,9 +2629,9 @@ func listInfographicOverviews(c *api.Client, notebookID string) error {
 
 	fmt.Fprintln(w, "INFOGRAPHIC_ID\tTITLE\tSTATUS")
 	for _, infographic := range infographicOverviews {
-		status := "pending"
-		if infographic.IsReady {
-			status = "ready"
+		status := infographic.Status
+		if status == "" {
+			status = "pending"
 		}
 		title := infographic.Title
 		if title == "" {

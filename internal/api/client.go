@@ -2105,7 +2105,8 @@ type PPTOverviewResult struct {
 	PPTID     string
 	Title     string
 	PPTData   string // Base64 encoded or URL
-	IsReady   bool
+	IsReady   bool   // true when Status == "ready"
+	Status    string // "pending" (creating), "ready", "failed" — matches ArtifactState 1/2/3
 }
 
 // CreatePPTOverviewOptions holds optional style, language, format and length for PPT creation.
@@ -2338,6 +2339,7 @@ func (c *Client) ListPPTOverviews(projectID string) ([]*PPTOverviewResult, error
 						result := &PPTOverviewResult{
 							ProjectID: projectID,
 							IsReady:   false,
+							Status:    "pending",
 						}
 
 						// Extract artifact ID (index 0)
@@ -2350,11 +2352,17 @@ func (c *Client) ListPPTOverviews(projectID string) ([]*PPTOverviewResult, error
 							result.Title = title
 						}
 
-						// Check status (index 4)
+						// Artifact status: 1=creating, 2=ready, 3/4=failed (API uses 4 for failed)
 						if len(artifact) > 4 {
 							if status, ok := artifact[4].(float64); ok {
-								if int(status) == 3 {
+								s := int(status)
+								if s == 2 {
+									result.Status = "ready"
 									result.IsReady = true
+								} else if s >= 3 {
+									result.Status = "failed"
+								} else {
+									result.Status = "pending"
 								}
 							}
 						}
@@ -2378,6 +2386,7 @@ func (c *Client) ListPPTOverviews(projectID string) ([]*PPTOverviewResult, error
 						if downloadURL != "" {
 							result.PPTData = downloadURL
 							result.IsReady = true
+							result.Status = "ready"
 						}
 
 						results = append(results, result)
@@ -2437,6 +2446,7 @@ type InfographicOverviewResult struct {
 	Title           string
 	InfographicData string // Base64 encoded or URL
 	IsReady         bool
+	Status          string // "pending", "ready", "failed" — matches ArtifactState 1/2/3
 }
 
 // CreateInfographicOverviewOptions holds optional style, language, orientation and detail level for infographic creation.
@@ -2671,6 +2681,7 @@ func (c *Client) ListInfographicOverviews(projectID string) ([]*InfographicOverv
 						result := &InfographicOverviewResult{
 							ProjectID: projectID,
 							IsReady:   false,
+							Status:    "pending",
 						}
 
 						// Extract artifact ID (index 0)
@@ -2683,11 +2694,17 @@ func (c *Client) ListInfographicOverviews(projectID string) ([]*InfographicOverv
 							result.Title = title
 						}
 
-						// Check status (index 4)
+						// Artifact status: 1=creating, 2=ready, 3/4=failed (API uses 4 for failed)
 						if len(artifact) > 4 {
 							if status, ok := artifact[4].(float64); ok {
-								if int(status) == 3 {
+								s := int(status)
+								if s == 2 {
+									result.Status = "ready"
 									result.IsReady = true
+								} else if s >= 3 {
+									result.Status = "failed"
+								} else {
+									result.Status = "pending"
 								}
 							}
 						}
@@ -2698,6 +2715,7 @@ func (c *Client) ListInfographicOverviews(projectID string) ([]*InfographicOverv
 						if imageURL != "" {
 							result.InfographicData = imageURL
 							result.IsReady = true
+							result.Status = "ready"
 						}
 
 						results = append(results, result)
